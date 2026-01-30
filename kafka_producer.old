@@ -1,0 +1,61 @@
+# kafka_producer.py
+import ijson
+import json
+from decimal import Decimal
+from kafka import KafkaProducer
+from kafka.errors import KafkaError
+import time
+
+class DecimalEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, Decimal):
+            return float(obj)  # or str(obj) to preserve precision
+        return super(DecimalEncoder, self).default(obj)
+
+def create_producer():
+    """Create Kafka producer with JSON serialization"""
+    return KafkaProducer(
+        bootstrap_servers=['localhost:9092'],
+        value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+        key_serializer=lambda k: k.encode('utf-8') if k else None,
+        acks='all',  # Wait for all replicas
+        retries=3
+    )
+
+def stream_json_to_kafka(filepath, topic='transactions'):
+    """
+    Stream large JSON file to Kafka using ijson.
+    Each transaction becomes a Kafka message.
+    """
+    producer = create_producer()
+    count = 0
+    start_time = time.time()
+    
+    print(f"Streaming {filepath} to Kafka topic '{topic}'...")
+    
+    with open(filepath, 'rb') as f:
+        for transaction in ijson.items(f, 'transactions.item'):
+            # Use transaction_id as partition key for ordering
+            key = transaction['transaction_id']
+            
+            # Send to Kafka
+            future = producer.send(topic, key=key, value=transaction)
+            
+            # Optional: wait for confirmation (slower but safer)
+            # future.get(timeout=10)
+            
+            count += 1
+            if count % 5000 == 0:
+                producer.flush()  # Batch flush
+                elapsed = time.time() - start_time
+                rate = count / elapsed
+                print(f"  Sent {count} messages ({rate:.0f} msg/sec)")
+    
+    producer.flush()
+    producer.close()
+    
+    elapsed = time.time() - start_time
+    print(f"\nComplete: {count} messages in {elapsed:.2f}s ({count/elapsed:.0f} msg/sec)")
+
+if __name__ == "__main__":
+    stream_json_to_kafka("large_transactions.json")
